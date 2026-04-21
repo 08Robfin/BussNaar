@@ -1,32 +1,55 @@
 # 🚌 BussNaar?
 > BussNår? - Når er bussen?
 
-A lightweight, background-running Windows app that sits in your system tray and tells you exactly when your next bus is leaving. Built with Python, using the official Entur API.
-
-Perfect for students or commuters who just want to check the bus without opening a slow browser or a clunky mobile app.
-
-## ✨ Features
-* **System Tray Integration:** Runs silently in the background. 
-* **Instant Departure Board:** Left-click the tray icon to pop up a clean window showing the next 5 departures with exact times.
-* **Smart Setup Wizard:** First time running? A modern UI wizard guides you through searching for your stop and selecting your specific bus line.
-* **Client-Side Filtering:** Handles busy bus stops by fetching up to 150 departures and locally filtering out only the exact route you care about.
-* **Live Map Link:** Trust issues? Click the map button in the app to open the Entur Live Map for your stop in your browser.
-* **School-Network Proof:** Ignores pesky SSL-inspection blockers common on school/corporate WiFi networks.
-
-## 🛠️ Tech Stack
-* **Python 3**
-* **CustomTkinter** - For the modern dark/light mode setup wizard and departure UI.
-* **Pystray** - For the system tray icon integration.
-* **Requests** - For talking to the Entur GraphQL and Geocoder APIs.
-* **Pillow** - For generating the dynamic tray icon image with real-time minutes.
-
-## ⚙️ Configuration
-The app saves your chosen route locally in `%userprofile%\BussNaar\config.json`. 
-
-If you ever want to change your route or stop, just **right-click** the tray icon and select "Endre rute / Innstillinger" to open the wizard again. Or simply delete the `config.json` file for a hard reset to factory settings.
-
-## 📡 API Credits
-Data is fetched via the open **[Entur API](https://developer.entur.org/)** (National Access Point for public transport data in Norway). No API key is required to run this app, as it complies with Entur's open data guidelines using standard client headers.
+BussNaar? er et lite program som kjører stille i bakgrunnen på PC-en din og holder styr på når neste buss går fra stoppet ditt. Du ser det direkte nede ved klokka, akkurat der du allerede ser på hele tiden.
 
 ---
-*Created for personal use & learning.*
+
+## Hva er dette egentlig?
+
+Du vet den følelsen av å måtte åpne nettleseren, vente på at siden laster, skrive inn stoppet, finne riktig linje... og så er du allerede fem minutter forsinket?
+
+BussNår? løser det. Installer én gang, velg busslinja di, og så er du ferdig. Fra da av vises det alltid hvor mange minutter det er til neste buss, nede i systemstatusfeltet, ved siden av batteriikonet.
+
+---
+
+## Slik fungerer det
+
+**Første gang du starter appen:**
+Du får opp en liten veiviser som spør deg om to ting:
+1. Hvilket bussstopp du reiser fra
+2. Hvilken linje du tar
+
+Etter det trenger du aldri røre innstillingene igjen (med mindre du vil bytte rute).
+
+**Til vanlig:**
+Programmet kjører i bakgrunnen og viser automatisk minutter til neste avgang. Klikk på ikonet for å se de neste 5 avgangene. Høyreklikk for å endre rute eller avslutte.
+
+> 💡 **Tips:** Vil du at ikonet alltid skal synes? Klikk på pil opp-symbolet (^) nede ved klokka, finn BussNaar?-ikonet (Grønn firkant med Tall), og dra det ned på linja ved siden av batteriikonet. Da ser du alltid neste avgang uten å klikke noe som helst.
+
+---
+
+## Perfekt for skoleelever
+
+Har du skolePC og vil alltid se når bussen hjem går? Dette er laget akkurat for det. Appen er testet på skolenettverk og fungerer selv der.
+
+---
+
+## Last ned og kom i gang
+
+1. Last ned `.exe`-filen
+2. Kjør `.exe`-filen
+3. Følg veiviseren (tar 15 sekunder)
+4. Ferdig ✅
+
+Innstillingene dine lagres automatisk på PC-en din, så alt huskes til neste gang.
+
+---
+
+## Vil du endre busslinje senere?
+
+Høyreklikk på ikonet og velg **«Endre rute / Innstillinger»**. Da starter veiviseren på nytt.
+
+---
+
+*Data hentes fra [Entur](https://entur.no/) — Norges offentlige reisedatabank. Krever ikke innlogging eller API-nøkkel.*
