@@ -1,427 +1,638 @@
 #!/usr/bin/env python3
-# RUN THIS FILE TO START BUSSNAAR?
+# BussNaar — Norsk bussavgang-tracker
 
-import sys, os, subprocess, json, threading, time, webbrowser
+import sys, subprocess, json, threading, time, webbrowser
 from pathlib import Path
 from datetime import datetime
 import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- 1. PRO-APP DPI SCALING ---
 if sys.platform == "win32":
     import ctypes
     try: ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except: pass
 
-# --- 2. BOOTSTRAP ---
+# ── Bootstrap ─────────────────────────────────────────────────────────────────
 def ensure_packages():
     import tkinter as tk
-    splash = tk.Tk()
-    splash.title("BussNaar?")
-    splash.geometry("450x250")
-    splash.configure(bg="#00a070")
-    splash.eval('tk::PlaceWindow . center')
-    splash.overrideredirect(True)
-    tk.Label(splash, text="BussNaar?", font=("Segoe UI", 36, "bold"), fg="white", bg="#00a070").pack(pady=30)
-    status = tk.Label(splash, text="Laster...", font=("Segoe UI", 12), fg="white", bg="#00a070")
+    root = tk.Tk()
+    root.overrideredirect(True)
+    root.configure(bg="#ffffff")
+    root.geometry("340x160")
+    root.eval('tk::PlaceWindow . center')
+    root.attributes('-alpha', 0)
+    tk.Label(root, text="BussNaar", font=("Segoe UI", 28, "bold"),
+             fg="#00c47a", bg="#ffffff").pack(pady=(36, 6))
+    status = tk.Label(root, text="Laster...", font=("Segoe UI", 11),
+                      fg="#bbbbbb", bg="#ffffff")
     status.pack()
-    splash.update()
-
-    reqs = [('requests', 'requests'), ('customtkinter', 'customtkinter'), ('pystray', 'pystray'), ('PIL', 'Pillow')]
-    missing = [pip for imp, pip in reqs if subprocess.call([sys.executable, '-c', f'import {imp}'], stderr=subprocess.DEVNULL) != 0]
-    
+    def fade(a=0.0):
+        if a < 1.0:
+            root.attributes('-alpha', a); root.after(16, lambda: fade(a+0.07))
+        else: root.attributes('-alpha', 1.0)
+    fade(); root.update()
+    reqs = [('requests','requests'),('customtkinter','customtkinter'),
+            ('pystray','pystray'),('PIL','Pillow')]
+    missing = [pip for imp,pip in reqs
+               if subprocess.call([sys.executable,'-c',f'import {imp}'],
+                                  stderr=subprocess.DEVNULL) != 0]
     if missing:
-        status.config(text="Installerer... ✨")
-        splash.update()
-        subprocess.run([sys.executable, '-m', 'pip', 'install', '-q'] + missing, check=True)
-    splash.destroy()
+        status.config(text="Installerer avhengigheter..."); root.update()
+        subprocess.run([sys.executable,'-m','pip','install','-q']+missing, check=True)
+    root.destroy()
 
-ensure_packages()
+if not getattr(sys, 'frozen', False):
+    ensure_packages()
 
 import requests
 import customtkinter as ctk
 from pystray import Icon, Menu, MenuItem
 from PIL import Image, ImageDraw, ImageFont
 
-AKT_GREEN = "#00a070"
-AKT_HOVER = "#007a55"
-BG_COLOR = "#f9f9f9"
+# ── Design tokens ─────────────────────────────────────────────────────────────
+ACCENT        = "#00c47a"
+ACCENT_HOVER  = "#00a866"
+ACCENT_LIGHT  = "#edf9f4"
+ACCENT_BORDER = "#b3ead1"
+BG            = "#f7f8fa"
+SURFACE       = "#ffffff"
+CARD          = "#ffffff"
+BORDER        = "#ebebeb"
+TEXT          = "#111111"
+TEXT2         = "#9a9a9a"
+TEXT3         = "#c4c4c4"
+RED           = "#e53935"
+FONT          = "Segoe UI"
+RADIUS        = 12
+
 ctk.set_appearance_mode("light")
 
-# --- 3. API CLIENT ---
+# ── OS helpers ─────────────────────────────────────────────────────────────────
+def apply_rounded_corners(win):
+    """Ask Windows 11 DWM to round this window's corners."""
+    if sys.platform != "win32": return
+    try:
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        if not hwnd: hwnd = win.winfo_id()
+        DWMWA_WINDOW_CORNER_PREFERENCE = 33
+        val = ctypes.c_int(2)          # DWMWCP_ROUND
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+            ctypes.byref(val), ctypes.sizeof(val))
+    except: pass
+
+# ── Animation helpers ──────────────────────────────────────────────────────────
+def fade_in(win, steps=20, delay=10):
+    win.attributes('-alpha', 0.0)
+    def _tick(a):
+        if a >= 1.0: win.attributes('-alpha', 1.0); return
+        win.attributes('-alpha', round(a, 2))
+        win.after(delay, lambda: _tick(a + 1.0/steps))
+    win.after(10, lambda: _tick(0.0))
+
+
+def animate_dots(label, base, stop_flag):
+    frames = [base+"   ", base+".  ", base+".. ", base+"..."]
+    idx = [0]
+    def _tick():
+        if stop_flag[0]: return
+        label.configure(text=frames[idx[0] % 4]); idx[0] += 1
+        label.after(380, _tick)
+    _tick()
+
+
+def interpolate_color(s, e, t):
+    def h2r(h): return tuple(int(h.lstrip('#')[i:i+2],16) for i in (0,2,4))
+    sr,er = h2r(s),h2r(e)
+    r = tuple(int(sr[i]+(er[i]-sr[i])*t) for i in range(3))
+    return f"#{r[0]:02x}{r[1]:02x}{r[2]:02x}"
+
+
+def hover_animate(widget, from_col, to_col, key="fg_color", steps=8, delay=14):
+    state = [0, None]
+    def _run():
+        if state[1]: widget.after_cancel(state[1])
+        t = max(0.0, min(1.0, state[0]/steps))
+        widget.configure(**{key: interpolate_color(from_col, to_col, t)})
+        if 0 < state[0] < steps:
+            state[0] += 1; state[1] = widget.after(delay, _run)
+        elif state[0] <= 0:
+            widget.configure(**{key: from_col})
+    def on_enter(_): state[0] = max(state[0],1); _run()
+    def on_leave(_):
+        def _rev():
+            if state[1]: widget.after_cancel(state[1])
+            widget.configure(**{key: interpolate_color(from_col, to_col, state[0]/steps)})
+            if state[0] > 0: state[0] -= 1; state[1] = widget.after(delay, _rev)
+            else: widget.configure(**{key: from_col})
+        _rev()
+    widget.bind("<Enter>", on_enter)
+    widget.bind("<Leave>", on_leave)
+
+# ── Shared UI helpers ──────────────────────────────────────────────────────────
+def _center(win, w, h):
+    win.update_idletasks()
+    sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+    win.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+
+
+def _drag_bind(widget, win):
+    def start(e): win._dx, win._dy = e.x, e.y
+    def move(e): win.geometry(
+        f"+{win.winfo_x()+(e.x-win._dx)}+{win.winfo_y()+(e.y-win._dy)}")
+    widget.bind("<Button-1>", start)
+    widget.bind("<B1-Motion>", move)
+
+
+def _title_bar(win, text, on_close):
+    bar = ctk.CTkFrame(win, height=50, fg_color=SURFACE, corner_radius=0)
+    bar.pack(fill="x"); bar.pack_propagate(False)
+    ctk.CTkFrame(win, height=1, fg_color=BORDER, corner_radius=0).pack(fill="x")
+
+    left = ctk.CTkFrame(bar, fg_color="transparent")
+    left.pack(side="left", fill="y", padx=18)
+    dot = ctk.CTkLabel(left, text="●", font=(FONT,9), text_color=ACCENT, fg_color="transparent")
+    dot.pack(side="left", padx=(0,7))
+    lbl = ctk.CTkLabel(left, text=text, font=(FONT,13,"bold"), text_color=TEXT, fg_color="transparent")
+    lbl.pack(side="left")
+
+    ctk.CTkButton(bar, text="✕", width=50, height=50, fg_color="transparent",
+                  hover_color="#ffeaea", text_color=TEXT2, font=(FONT,13),
+                  corner_radius=0, command=on_close).pack(side="right")
+    for w in [bar, dot, lbl, left]: _drag_bind(w, win)
+
+
+# ── API ────────────────────────────────────────────────────────────────────────
 class EnturAPI:
-    HEADERS = {"ET-Client-Name": "student_vennesla-bussnaar_app", "User-Agent": "Mozilla/5.0"}
+    HEADERS = {"ET-Client-Name":"student_vennesla-bussnaar_app","User-Agent":"Mozilla/5.0"}
 
     @staticmethod
     def search(query):
         try:
-            r = requests.get("https://api.entur.io/geocoder/v1/autocomplete", params={"text": query, "lang": "no"}, headers=EnturAPI.HEADERS, timeout=5, verify=False)
-            r.raise_for_status()
-            results = []
-            for f in r.json().get('features', []):
-                props = f.get('properties', {})
-                fid = str(f.get('id', props.get('id', '')))
-                fname = props.get('name', props.get('label', 'Ukjent'))
-                locality = props.get('locality', props.get('county', ''))
-                display_name = f"{fname}, {locality}" if locality else fname
-                
-                if 'NSR:StopPlace' in fid and not any(x['id'] == fid for x in results):
-                    results.append({'id': fid, 'name': display_name})
+            r = requests.get("https://api.entur.io/geocoder/v1/autocomplete",
+                             params={"text":query,"lang":"no"},
+                             headers=EnturAPI.HEADERS, timeout=5, verify=False)
+            r.raise_for_status(); results=[]
+            for f in r.json().get('features',[]):
+                props=f.get('properties',{}); fid=str(f.get('id',props.get('id','')))
+                fname=props.get('name',props.get('label','Ukjent'))
+                loc=props.get('locality',props.get('county',''))
+                name=f"{fname}, {loc}" if loc else fname
+                if 'NSR:StopPlace' in fid and not any(x['id']==fid for x in results):
+                    results.append({'id':fid,'name':name})
             return results
-        except Exception as e:
-            return [{'id': 'ERROR', 'name': f"Internett/API Feil: {e}"}]
+        except Exception as e: return [{'id':'ERROR','name':f"Feil: {e}"}]
 
     @staticmethod
     def get_lines_for_stop(stop_id):
         try:
-            q = f'{{stopPlace(id: "{stop_id}") {{estimatedCalls(timeRange: 86400, numberOfDepartures: 100) {{destinationDisplay {{frontText}} serviceJourney {{journeyPattern {{line {{publicCode}}}}}}}}}}}}'
-            r = requests.post("https://api.entur.io/journey-planner/v3/graphql", json={"query": q}, headers=EnturAPI.HEADERS, timeout=5, verify=False)
-            unique_lines = {}
-            for d in r.json().get('data', {}).get('stopPlace', {}).get('estimatedCalls', []):
-                line = d.get('serviceJourney', {}).get('journeyPattern', {}).get('line', {}).get('publicCode', 'Ukjent')
-                dest = d.get('destinationDisplay', {}).get('frontText', 'Ukjent')
-                key = f"{line}_{dest}"
-                if key not in unique_lines:
-                    unique_lines[key] = {"line": line, "dest": dest}
-            return sorted(list(unique_lines.values()), key=lambda x: (x['line'], x['dest']))
-        except Exception: return []
+            q=(f'{{stopPlace(id:"{stop_id}"){{estimatedCalls(timeRange:86400,numberOfDepartures:100)'
+               f'{{destinationDisplay{{frontText}}serviceJourney{{journeyPattern{{line{{publicCode}}}}}}}}}}}}')
+            r=requests.post("https://api.entur.io/journey-planner/v3/graphql",
+                            json={"query":q},headers=EnturAPI.HEADERS,timeout=5,verify=False)
+            unique={}
+            for d in r.json().get('data',{}).get('stopPlace',{}).get('estimatedCalls',[]):
+                line=d.get('serviceJourney',{}).get('journeyPattern',{}).get('line',{}).get('publicCode','?')
+                dest=d.get('destinationDisplay',{}).get('frontText','?'); k=f"{line}_{dest}"
+                if k not in unique: unique[k]={"line":line,"dest":dest}
+            return sorted(unique.values(),key=lambda x:(x['line'],x['dest']))
+        except: return []
 
     @staticmethod
     def get_next_bus(stop_id, line_code, target_dest):
         try:
-            q = f'{{stopPlace(id: "{stop_id}") {{estimatedCalls(timeRange: 86400, numberOfDepartures: 150) {{expectedDepartureTime realtime destinationDisplay {{frontText}} serviceJourney {{journeyPattern {{line {{publicCode}}}}}}}}}}}}'
-            r = requests.post("https://api.entur.io/journey-planner/v3/graphql", json={"query": q}, headers=EnturAPI.HEADERS, timeout=5, verify=False)
-            deps = []
-            
-            for call in r.json().get('data', {}).get('stopPlace', {}).get('estimatedCalls', []):
-                dest = call.get('destinationDisplay', {}).get('frontText', 'Ukjent')
-                l_code = call.get('serviceJourney', {}).get('journeyPattern', {}).get('line', {}).get('publicCode', 'Ukjent')
-                
-                if dest.strip().lower() != target_dest.strip().lower() or l_code.strip().lower() != line_code.strip().lower(): 
-                    continue
-
-                dt = datetime.fromisoformat(call.get('expectedDepartureTime', '').replace('Z', '+00:00'))
-                clock_time = dt.astimezone().strftime('%H:%M')
-                mins = (dt - datetime.now(dt.tzinfo)).total_seconds() / 60
-                
-                if mins >= 0:
-                    deps.append({
-                        'line': l_code,
-                        'dest': dest, 
-                        'mins': int(mins), 
-                        'time': clock_time,
-                        'realtime': call.get('realtime', False)
-                    })
-            
-            return sorted(deps, key=lambda x: x['mins'])[:5]
+            q=(f'{{stopPlace(id:"{stop_id}"){{estimatedCalls(timeRange:86400,numberOfDepartures:150)'
+               f'{{expectedDepartureTime realtime destinationDisplay{{frontText}}'
+               f'serviceJourney{{journeyPattern{{line{{publicCode}}}}}}}}}}}}')
+            r=requests.post("https://api.entur.io/journey-planner/v3/graphql",
+                            json={"query":q},headers=EnturAPI.HEADERS,timeout=5,verify=False)
+            deps=[]
+            for call in r.json().get('data',{}).get('stopPlace',{}).get('estimatedCalls',[]):
+                dest=call.get('destinationDisplay',{}).get('frontText','?')
+                l_code=call.get('serviceJourney',{}).get('journeyPattern',{}).get('line',{}).get('publicCode','?')
+                if (dest.strip().lower()!=target_dest.strip().lower() or
+                        l_code.strip().lower()!=line_code.strip().lower()): continue
+                dt=datetime.fromisoformat(call.get('expectedDepartureTime','').replace('Z','+00:00'))
+                clock=dt.astimezone().strftime('%H:%M')
+                mins=(dt-datetime.now(dt.tzinfo)).total_seconds()/60
+                if mins>=0:
+                    deps.append({'line':l_code,'dest':dest,'mins':int(mins),'time':clock,
+                                 'realtime':call.get('realtime',False)})
+            return sorted(deps,key=lambda x:x['mins'])[:5]
         except: return []
 
-# --- 4. DEPARTURE BOARD POPUP ---
+
+# ── Departure Board ────────────────────────────────────────────────────────────
 class DepartureBoard(ctk.CTkToplevel):
-    def __init__(self, parent, app_controller):
+    W, H = 390, 570
+
+    def __init__(self, parent, app):
         super().__init__(parent)
-        self.app_controller = app_controller
+        self.app = app
         self.overrideredirect(True)
-        self.geometry("350x550")
-        self.configure(fg_color=BG_COLOR)
         self.attributes('-topmost', True)
-        
-        self.update_idletasks()
-        self.geometry(f"+{(self.winfo_screenwidth()//2)-(350//2)}+{(self.winfo_screenheight()//2)-(550//2)}")
+        self.configure(fg_color=BG)
+        self.geometry(f"{self.W}x{self.H}")
+        _center(self, self.W, self.H)
+        fade_in(self)
+        self.after(50, lambda: apply_rounded_corners(self))
 
-        self.build_custom_titlebar()
-        
-        # FIX 1: Byttet fra CTkScrollableFrame til CTkFrame
-        self.container = ctk.CTkFrame(self, fg_color="transparent")
-        self.container.pack(fill="both", expand=True, padx=15, pady=(15, 0))
+        route = app.config.get('route',{}).get('name','Avganger')
+        _title_bar(self, route, self.destroy)
 
-        self.map_btn = ctk.CTkButton(self, text="🗺️ Se bussene live på kart", font=("Segoe UI", 14, "bold"), fg_color="#e0e0e0", hover_color="#d0d0d0", text_color="#333", height=45, corner_radius=8, command=self.open_entur_map)
-        self.map_btn.pack(fill="x", padx=15, pady=15)
-        
-        self.refresh()
+        self._scroll = ctk.CTkScrollableFrame(
+            self, fg_color="transparent",
+            scrollbar_button_color=BORDER,
+            scrollbar_button_hover_color=ACCENT_BORDER)
+        self._scroll.pack(fill="both", expand=True, padx=16, pady=12)
 
-    def build_custom_titlebar(self):
-        self.title_bar = ctk.CTkFrame(self, height=40, fg_color="#ffffff", corner_radius=0)
-        self.title_bar.pack(fill="x", side="top")
-        route_name = self.app_controller.config.get('route', {}).get('name', 'Avganger')
-        ctk.CTkLabel(self.title_bar, text=f"🚌 {route_name}", font=("Segoe UI", 14, "bold"), text_color="#333").pack(side="left", padx=15)
-        self.close_btn = ctk.CTkButton(self.title_bar, text="✕", width=40, height=40, fg_color="transparent", hover_color="#ffe5e5", text_color="#333", font=("Arial", 16), corner_radius=0, command=self.destroy)
-        self.close_btn.pack(side="right")
-        self.title_bar.bind("<Button-1>", self.start_move)
-        self.title_bar.bind("<B1-Motion>", self.do_move)
+        ctk.CTkFrame(self, height=1, fg_color=BORDER, corner_radius=0).pack(fill="x")
 
-    def start_move(self, event):
-        self.x, self.y = event.x, event.y
+        # ── Settings row ──
+        settings = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=44)
+        settings.pack(fill="x")
+        settings.pack_propagate(False)
 
-    def do_move(self, event):
-        self.geometry(f"+{self.winfo_x() + (event.x - self.x)}+{self.winfo_y() + (event.y - self.y)}")
+        ctk.CTkLabel(settings, text="Start ved oppstart",
+                     font=(FONT, 12), text_color=TEXT2,
+                     fg_color="transparent").pack(side="left", padx=16)
 
-    def open_entur_map(self):
-        # FIX 2: Riktig URL-struktur for Entur
-        stop_id = self.app_controller.config['route']['stop_id']
-        webbrowser.open(f"https://entur.no/kart/stoppested?id={stop_id}")
+        self._startup_switch = ctk.CTkSwitch(
+            settings, text="", width=36, height=18,
+            fg_color=BORDER, progress_color=ACCENT,
+            button_color=SURFACE, button_hover_color=SURFACE,
+            command=self._toggle_startup)
+        self._startup_switch.pack(side="right", padx=16)
+        if app.is_startup_enabled():
+            self._startup_switch.select()
 
-    def refresh(self):
-        for w in self.container.winfo_children(): w.destroy()
-        deps = self.app_controller.current_deps
-        
+        ctk.CTkFrame(self, height=1, fg_color=BORDER, corner_radius=0).pack(fill="x")
+        ctk.CTkButton(self, text="Se bussene live på kart  →",
+                      font=(FONT,12), fg_color=SURFACE, hover_color=ACCENT_LIGHT,
+                      text_color=TEXT2, height=44, corner_radius=0,
+                      command=self._open_map).pack(fill="x")
+        self._refresh()
+
+    def _toggle_startup(self):
+        self.app._toggle_startup(None, None)
+
+    def _open_map(self):
+        webbrowser.open(f"https://entur.no/kart/stoppested?id={self.app.config['route']['stop_id']}")
+
+    def _refresh(self):
+        for w in self._scroll.winfo_children(): w.destroy()
+        deps = self.app.current_deps
         if deps is None:
-            ctk.CTkLabel(self.container, text="Laster avganger... ⏳", font=("Segoe UI", 14), text_color="#888").pack(pady=40)
-            self.after(1000, self.refresh)
+            lbl = ctk.CTkLabel(self._scroll, text="Henter avganger",
+                               font=(FONT,13), text_color=TEXT3, fg_color="transparent")
+            lbl.pack(pady=60)
+            flag = [False]
+            animate_dots(lbl, "Henter avganger", flag)
+            self.after(800, lambda: (flag.__setitem__(0,True), self._refresh()))
             return
-            
-        if len(deps) == 0:
-            ctk.CTkLabel(self.container, text="Ingen avganger funnet.", font=("Segoe UI", 14), text_color="#e74c3c").pack(pady=40)
+        if not deps:
+            ctk.CTkLabel(self._scroll, text="Ingen avganger funnet",
+                         font=(FONT,13), text_color=RED, fg_color="transparent").pack(pady=60)
             return
+        for i, d in enumerate(deps): self._card(d, i)
 
-        for d in deps:
-            card = ctk.CTkFrame(self.container, fg_color="#fff", corner_radius=8)
-            card.pack(fill="x", pady=5)
-            
-            color = AKT_GREEN if d['realtime'] else "#888888"
-            live_text = "📡 Live" if d['realtime'] else "Rutetid"
-            
-            right_frame = ctk.CTkFrame(card, fg_color="transparent")
-            right_frame.pack(side="right", padx=15, pady=5)
-            ctk.CTkLabel(right_frame, text=f"{d['mins']} min", font=("Segoe UI", 16, "bold"), text_color=color).pack(anchor="e")
-            ctk.CTkLabel(right_frame, text=f"{live_text} • kl {d['time']}", font=("Segoe UI", 11, "bold"), text_color="#888").pack(anchor="e")
+    def _card(self, d, index):
+        is_live = d['realtime']
+        color   = ACCENT if is_live else TEXT3
+        bg_badge= ACCENT_LIGHT if is_live else "#f0f0f0"
 
-            ctk.CTkLabel(card, text=f"{d['line']}", font=("Segoe UI", 16, "bold"), text_color="white", fg_color=color, corner_radius=6, width=40, height=40).pack(side="left", padx=10, pady=10)
-            
-            short_dest = d['dest'] if len(d['dest']) <= 16 else d['dest'][:14] + "..."
-            ctk.CTkLabel(card, text=short_dest, font=("Segoe UI", 14, "bold"), text_color="#333", anchor="w").pack(side="left", padx=5, fill="x", expand=True)
+        card = ctk.CTkFrame(self._scroll, fg_color=SURFACE, corner_radius=RADIUS,
+                            border_width=1, border_color=BORDER)
+        card.pack(fill="x", pady=5)
+        card.grid_columnconfigure(1, weight=1)
 
-# --- 5. THE WIZARD ---
-class ModernWizard(ctk.CTkToplevel):
-    def __init__(self, parent, app_controller):
+        ctk.CTkLabel(card, text=d['line'], font=(FONT,13,"bold"),
+                     text_color=ACCENT if is_live else TEXT2,
+                     fg_color=bg_badge, corner_radius=8,
+                     width=44, height=44).grid(row=0,column=0,rowspan=2,padx=(14,10),pady=14)
+
+        dest = d['dest'] if len(d['dest'])<=22 else d['dest'][:20]+"…"
+        ctk.CTkLabel(card, text=dest, font=(FONT,14,"bold"),
+                     text_color=TEXT, anchor="w", fg_color="transparent").grid(
+            row=0,column=1,sticky="sw",pady=(14,1))
+
+        tag = ("● Live" if is_live else "○ Rutetid")
+        ctk.CTkLabel(card, text=tag, font=(FONT,11),
+                     text_color=color, anchor="w", fg_color="transparent").grid(
+            row=1,column=1,sticky="nw",pady=(0,14))
+
+        right = ctk.CTkFrame(card, fg_color="transparent")
+        right.grid(row=0,column=2,rowspan=2,padx=(0,16))
+        ctk.CTkLabel(right, text=str(d['mins']), font=(FONT,30,"bold"),
+                     text_color=ACCENT if is_live else TEXT,
+                     fg_color="transparent").pack(anchor="e")
+        ctk.CTkLabel(right, text=f"min · {d['time']}", font=(FONT,10),
+                     text_color=TEXT2, fg_color="transparent").pack(anchor="e")
+
+        hover_animate(card, SURFACE, ACCENT_LIGHT, "fg_color")
+
+
+# ── Setup Wizard ───────────────────────────────────────────────────────────────
+class SetupWizard(ctk.CTkToplevel):
+    W, H    = 440, 580
+    _PAD_X  = 30
+    _PAD_Y  = 24
+    _BAR_H  = 51   # title bar (50) + separator (1)
+
+    def __init__(self, parent, app):
         super().__init__(parent)
-        self.app_controller = app_controller
+        self.app = app
         self.overrideredirect(True)
-        self.geometry("450x650")
-        self.configure(fg_color=BG_COLOR)
         self.attributes('-topmost', True)
-        
-        self.update_idletasks()
-        self.geometry(f"+{(self.winfo_screenwidth()//2)-(450//2)}+{(self.winfo_screenheight()//2)-(650//2)}")
+        self.configure(fg_color=SURFACE)
+        self.geometry(f"{self.W}x{self.H}")
+        _center(self, self.W, self.H)
+        fade_in(self)
+        self.after(50, lambda: apply_rounded_corners(self))
 
-        self.config_data = {}
-        self.search_timer = None
-        self.all_lines = []
-        
-        self.build_custom_titlebar()
-        self.container = ctk.CTkFrame(self, fg_color="transparent")
-        self.container.pack(fill="both", expand=True, padx=30, pady=20)
-        self.show_step_1()
+        self._cfg, self._all_lines, self._timer = {}, [], None
 
-    def build_custom_titlebar(self):
-        self.title_bar = ctk.CTkFrame(self, height=45, fg_color="#ffffff", corner_radius=0)
-        self.title_bar.pack(fill="x", side="top")
-        ctk.CTkLabel(self.title_bar, text="🚌 BussNaar? Oppsett", font=("Segoe UI", 14, "bold"), text_color="#333").pack(side="left", padx=15)
-        self.close_btn = ctk.CTkButton(self.title_bar, text="✕", width=45, height=45, fg_color="transparent", hover_color="#ffe5e5", text_color="#333", font=("Arial", 16), corner_radius=0, command=self.close_wizard)
-        self.close_btn.pack(side="right")
-        self.title_bar.bind("<Button-1>", self.start_move)
-        self.title_bar.bind("<B1-Motion>", self.do_move)
+        _title_bar(self, "BussNaar — Oppsett", self._close)
+        self._body = ctk.CTkFrame(self, fg_color="transparent")
+        self._body.pack(fill="both", expand=True,
+                        padx=self._PAD_X, pady=self._PAD_Y)
+        self._step1()
 
-    def start_move(self, event):
-        self.x, self.y = event.x, event.y
-
-    def do_move(self, event):
-        self.geometry(f"+{self.winfo_x() + (event.x - self.x)}+{self.winfo_y() + (event.y - self.y)}")
-
-    def close_wizard(self):
+    def _close(self):
         self.destroy()
-        if not self.app_controller.is_config_valid():
-            self.app_controller.quit()
+        if not self.app.is_config_valid(): self.app.quit()
 
-    def clear_container(self):
-        for widget in self.container.winfo_children(): widget.destroy()
+    def _clear(self):
+        for w in self._body.winfo_children(): w.destroy()
 
-    def show_step_1(self):
-        self.clear_container()
-        ctk.CTkLabel(self.container, text="Velkommen", font=("Segoe UI", 32, "bold"), text_color="#111").pack(pady=(60, 10))
-        ctk.CTkLabel(self.container, text="Finn din faste rute.", font=("Segoe UI", 16), text_color="#666").pack(pady=(0, 60))
-        ctk.CTkButton(self.container, text="Start →", font=("Segoe UI", 16, "bold"), fg_color=AKT_GREEN, hover_color=AKT_HOVER, height=55, corner_radius=8, command=self.show_step_2).pack(fill="x", side="bottom", pady=40)
+    def _transition(self, next_fn):
+        next_fn()
 
-    def show_step_2(self):
-        self.clear_container()
-        ctk.CTkLabel(self.container, text="Hvor drar du fra?", font=("Segoe UI", 28, "bold"), text_color="#111").pack(pady=(20, 20))
-        self.search_entry = ctk.CTkEntry(self.container, placeholder_text="F.eks. Rådhuset...", font=("Segoe UI", 16), height=50, corner_radius=8, fg_color="#fff")
-        self.search_entry.pack(fill="x", pady=10)
-        self.search_entry.bind("<KeyRelease>", self.trigger_search)
-        self.results_frame = ctk.CTkScrollableFrame(self.container, fg_color="transparent")
-        self.results_frame.pack(fill="both", expand=True, pady=10)
+    # ── Shared widget builders ────────────────────────────────────────────────
+    def _heading(self, title, sub=None):
+        ctk.CTkLabel(self._body, text=title, font=(FONT,22,"bold"),
+                     text_color=TEXT, anchor="w", fg_color="transparent").pack(
+            anchor="w", pady=(4,2))
+        if sub:
+            ctk.CTkLabel(self._body, text=sub, font=(FONT,13),
+                         text_color=ACCENT, anchor="w", fg_color="transparent").pack(
+                anchor="w", pady=(0,16))
 
-    def trigger_search(self, event):
-        if self.search_timer: self.after_cancel(self.search_timer)
-        self.search_timer = self.after(300, self.execute_search)
+    def _primary_btn(self, text, cmd):
+        return ctk.CTkButton(self._body, text=text, font=(FONT,14,"bold"),
+                             fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                             text_color="#ffffff", height=50, corner_radius=RADIUS,
+                             command=cmd)
 
-    def execute_search(self):
-        query = self.search_entry.get().strip()
-        for w in self.results_frame.winfo_children(): w.destroy()
-        if len(query) < 2: return
-        ctk.CTkLabel(self.results_frame, text="Søker... ⏳", font=("Segoe UI", 14), text_color="#888").pack(pady=30)
+    def _mk_entry(self, placeholder):
+        return ctk.CTkEntry(self._body, placeholder_text=placeholder,
+                            font=(FONT,14), height=48, corner_radius=10,
+                            fg_color=BG, border_color=BORDER, border_width=1,
+                            text_color=TEXT, placeholder_text_color=TEXT3)
+
+    # ── Steps ─────────────────────────────────────────────────────────────────
+    def _step1(self):
+        self._clear()
+        ctk.CTkLabel(self._body, text="", fg_color="transparent").pack(expand=True)
+        ctk.CTkLabel(self._body, text="BussNaar", font=(FONT,40,"bold"),
+                     text_color=ACCENT, fg_color="transparent").pack()
+        ctk.CTkLabel(self._body, text="Din personlige bussavgang-tracker.",
+                     font=(FONT,14), text_color=TEXT2, fg_color="transparent").pack(pady=(6,0))
+        ctk.CTkLabel(self._body, text="", fg_color="transparent").pack(expand=True)
+        self._primary_btn("Kom i gang  →", lambda: self._transition(self._step2)).pack(
+            fill="x", pady=(0,4))
+
+    def _step2(self):
+        self._clear()
+        self._heading("Hvor drar du fra?", "Skriv inn navn på holdeplass")
+        self._stop_entry = self._mk_entry("F.eks. Rådhuset...")
+        self._stop_entry.pack(fill="x", pady=(0,10))
+        self._stop_entry.bind("<KeyRelease>", self._debounce)
+        self._stop_entry.focus()
+        self._results = ctk.CTkScrollableFrame(self._body, fg_color="transparent",
+                                               scrollbar_button_color=BORDER,
+                                               scrollbar_button_hover_color=ACCENT_BORDER)
+        self._results.pack(fill="both", expand=True)
+
+    def _debounce(self, _=None):
+        if self._timer: self.after_cancel(self._timer)
+        self._timer = self.after(300, self._do_search)
+
+    def _do_search(self):
+        q = self._stop_entry.get().strip()
+        for w in self._results.winfo_children(): w.destroy()
+        if len(q) < 2: return
+        flag = [False]
+        lbl = ctk.CTkLabel(self._results, text="Søker", font=(FONT,13),
+                           text_color=TEXT3, fg_color="transparent")
+        lbl.pack(pady=20)
+        animate_dots(lbl, "Søker", flag)
         def fetch():
-            results = EnturAPI.search(query)
-            self.after(0, lambda: self.render_results(results))
+            res = EnturAPI.search(q); flag[0] = True
+            self.after(0, lambda: self._show_stops(res))
         threading.Thread(target=fetch, daemon=True).start()
 
-    def render_results(self, results):
-        for w in self.results_frame.winfo_children(): w.destroy()
+    def _show_stops(self, results):
+        for w in self._results.winfo_children(): w.destroy()
         if not results:
-            ctk.CTkLabel(self.results_frame, text="Ingen treff.", font=("Segoe UI", 14), text_color="#e74c3c").pack(pady=30)
-            return
-        if results[0]['id'] == 'ERROR':
-            ctk.CTkLabel(self.results_frame, text=results[0]['name'], font=("Segoe UI", 12), text_color="#e74c3c", wraplength=350).pack(pady=30)
-            return
+            ctk.CTkLabel(self._results, text="Ingen treff.", font=(FONT,13),
+                         text_color=RED, fg_color="transparent").pack(pady=20); return
+        if results[0]['id']=='ERROR':
+            ctk.CTkLabel(self._results, text=results[0]['name'], font=(FONT,12),
+                         text_color=RED, wraplength=360, fg_color="transparent").pack(pady=20); return
         for s in results[:10]:
-            btn = ctk.CTkButton(self.results_frame, text=f"{s['name']}", fg_color="#fff", text_color="#333", hover_color="#e0f2ec", height=45, corner_radius=8, anchor="w", font=("Segoe UI", 14), command=lambda stop=s: self.show_step_3(stop))
-            btn.pack(fill="x", pady=4)
+            ctk.CTkButton(self._results, text=s['name'],
+                          fg_color=BG, hover_color=ACCENT_LIGHT,
+                          text_color=TEXT, height=44, corner_radius=10,
+                          anchor="w", font=(FONT,13), border_width=1, border_color=BORDER,
+                          command=lambda stop=s: self._transition(lambda: self._step3(stop))
+                          ).pack(fill="x", pady=3)
 
-    def show_step_3(self, stop):
-        self.config_data['stop_id'] = stop['id']
-        self.config_data['stop_name'] = stop['name']
-        self.clear_container()
-        ctk.CTkLabel(self.container, text="Henter bussruter... ⏳", font=("Segoe UI", 16), text_color="#888").pack(pady=100)
-        def fetch_lines():
-            lines = EnturAPI.get_lines_for_stop(stop['id'])
-            self.after(0, lambda: self.render_lines(lines))
-        threading.Thread(target=fetch_lines, daemon=True).start()
+    def _step3(self, stop):
+        self._cfg['stop_id'], self._cfg['stop_name'] = stop['id'], stop['name']
+        self._clear()
+        self._heading("Henter ruter", stop['name'])
+        flag = [False]
+        lbl = ctk.CTkLabel(self._body, text="Henter ruter", font=(FONT,13),
+                           text_color=TEXT3, fg_color="transparent")
+        lbl.pack(pady=60)
+        animate_dots(lbl, "Henter ruter", flag)
+        def fetch():
+            lines = EnturAPI.get_lines_for_stop(stop['id']); flag[0] = True
+            self.after(0, lambda: self._show_lines(lines))
+        threading.Thread(target=fetch, daemon=True).start()
 
-    def render_lines(self, lines):
-        self.clear_container()
-        self.all_lines = lines
-        ctk.CTkLabel(self.container, text="Hvilken buss?", font=("Segoe UI", 28, "bold"), text_color="#111").pack(pady=(10, 5))
-        ctk.CTkLabel(self.container, text=f"Fra {self.config_data['stop_name']}", font=("Segoe UI", 12), text_color=AKT_GREEN).pack(pady=(0, 10))
-        self.line_search = ctk.CTkEntry(self.container, placeholder_text="Søk linje (f.eks 15)...", font=("Segoe UI", 16), height=45, corner_radius=8, fg_color="#fff")
-        self.line_search.pack(fill="x", pady=5)
-        self.line_search.bind("<KeyRelease>", self.filter_lines)
-        self.lines_frame = ctk.CTkScrollableFrame(self.container, fg_color="transparent")
-        self.lines_frame.pack(fill="both", expand=True, pady=5)
-        self.filter_lines()
+    def _show_lines(self, lines):
+        self._clear(); self._all_lines = lines
+        self._heading("Hvilken buss?", self._cfg['stop_name'])
+        self._line_search = self._mk_entry("Filtrer linjer...")
+        self._line_search.pack(fill="x", pady=(0,10))
+        self._line_search.bind("<KeyRelease>", self._filter_lines)
+        self._lines_frame = ctk.CTkScrollableFrame(self._body, fg_color="transparent",
+                                                   scrollbar_button_color=BORDER,
+                                                   scrollbar_button_hover_color=ACCENT_BORDER)
+        self._lines_frame.pack(fill="both", expand=True)
+        self._filter_lines()
 
-    def filter_lines(self, event=None):
-        q = self.line_search.get().strip().lower()
-        for w in self.lines_frame.winfo_children(): w.destroy()
-        filtered = [l for l in self.all_lines if q in l['line'].lower() or q in l['dest'].lower()]
+    def _filter_lines(self, _=None):
+        q = self._line_search.get().strip().lower()
+        for w in self._lines_frame.winfo_children(): w.destroy()
+        filtered = [l for l in self._all_lines
+                    if q in l['line'].lower() or q in l['dest'].lower()]
         if not filtered:
-            ctk.CTkLabel(self.lines_frame, text="Fant ingen ruter.", text_color="#e74c3c").pack(pady=20)
-            return
+            ctk.CTkLabel(self._lines_frame, text="Ingen ruter funnet.", font=(FONT,13),
+                         text_color=RED, fg_color="transparent").pack(pady=20); return
         for l in filtered:
-            btn = ctk.CTkButton(self.lines_frame, text=f"Buss {l['line']} ➔ {l['dest']}", fg_color="#fff", text_color="#333", hover_color="#e0f2ec", height=50, corner_radius=8, anchor="w", font=("Segoe UI", 14), command=lambda x=l: self.show_step_4(x))
-            btn.pack(fill="x", pady=4)
+            row = ctk.CTkFrame(self._lines_frame, fg_color=BG, corner_radius=10,
+                               border_width=1, border_color=BORDER)
+            row.pack(fill="x", pady=3)
+            badge = ctk.CTkLabel(row, text=l['line'], font=(FONT,12,"bold"),
+                                 text_color=ACCENT, fg_color=ACCENT_LIGHT,
+                                 corner_radius=7, width=36, height=36)
+            badge.pack(side="left", padx=10, pady=9)
+            dest_lbl = ctk.CTkLabel(row, text=l['dest'], font=(FONT,13),
+                                    text_color=TEXT, fg_color="transparent", anchor="w")
+            dest_lbl.pack(side="left", padx=4, fill="x", expand=True)
+            def _click(x=l): self._transition(lambda: self._step4(x))
+            for widget in [row, badge, dest_lbl]:
+                widget.bind("<Button-1>", lambda e, fn=_click: fn())
+            hover_animate(row, BG, ACCENT_LIGHT, "fg_color")
 
-    def show_step_4(self, line_data):
-        self.config_data['line'] = line_data['line']
-        self.config_data['dest'] = line_data['dest']
-        self.clear_container()
-        ctk.CTkLabel(self.container, text="Siste detaljer", font=("Segoe UI", 28, "bold"), text_color="#111").pack(pady=(40, 5))
-        ctk.CTkLabel(self.container, text=f"Buss {line_data['line']} ➔ {line_data['dest']}", font=("Segoe UI", 16, "bold"), text_color=AKT_GREEN).pack(pady=(0, 30))
-        ctk.CTkLabel(self.container, text="Ditt navn på ruten:", font=("Segoe UI", 14), text_color="#555").pack(anchor="w", pady=(20, 5))
-        self.name_entry = ctk.CTkEntry(self.container, placeholder_text="F.eks. Hjem fra skolen", font=("Segoe UI", 16), height=50, corner_radius=8)
-        self.name_entry.pack(fill="x", pady=5)
-        ctk.CTkButton(self.container, text="Lagre & Start ✔️", font=("Segoe UI", 16, "bold"), fg_color=AKT_GREEN, hover_color=AKT_HOVER, height=55, corner_radius=8, command=self.finish).pack(fill="x", side="bottom", pady=40)
+    def _step4(self, line_data):
+        self._cfg['line'], self._cfg['dest'] = line_data['line'], line_data['dest']
+        self._clear()
+        self._heading("Gi ruten et navn", f"Buss {line_data['line']} → {line_data['dest']}")
+        ctk.CTkLabel(self._body, text="Navn på ruten:", font=(FONT,12),
+                     text_color=TEXT2, anchor="w", fg_color="transparent").pack(
+            anchor="w", pady=(10,4))
+        self._name_entry = self._mk_entry('F.eks. "Hjem fra skolen"')
+        self._name_entry.pack(fill="x")
+        self._name_entry.focus()
+        self._name_entry.bind("<Return>", lambda _: self._finish())
+        self._primary_btn("Lagre og start", self._finish).pack(
+            fill="x", side="bottom", pady=(20,4))
 
-    def finish(self):
-        name = self.name_entry.get().strip()
+    def _finish(self):
+        name = self._name_entry.get().strip()
         if not name: return
-        self.app_controller.config['route'] = {
-            "name": name, "stop_id": self.config_data['stop_id'], 
-            "line": self.config_data['line'], "dest": self.config_data['dest']
-        }
-        self.app_controller.save_config()
-        self.app_controller.trigger_refresh()
-        self.app_controller.open_board() 
-        self.destroy()
+        self.app.config['route'] = {"name":name,"stop_id":self._cfg['stop_id'],
+                                    "line":self._cfg['line'],"dest":self._cfg['dest']}
+        self.app.save_config(); self.app.trigger_refresh()
+        self.app.open_board(); self.destroy()
 
-# --- 6. MAIN APP CONTROLLER ---
+
+# ── App Controller ─────────────────────────────────────────────────────────────
 class AppController:
     def __init__(self):
         self.conf_path = Path.home() / "BussNaar" / "config.json"
         self.conf_path.parent.mkdir(exist_ok=True)
-        
         try: self.config = json.load(open(self.conf_path)) if self.conf_path.exists() else {}
         except: self.config = {}
-
         self.current_deps = None
-        
-        self.dummy_root = ctk.CTk()
-        self.dummy_root.withdraw()
-        self.tray = None
-        self.setup_tray()
-        
         self.running = True
-        threading.Thread(target=self.loop, daemon=True).start()
-        
-        if not self.is_config_valid():
-            self.dummy_root.after(500, self.open_wizard)
-        else:
-            self.trigger_refresh()
-            self.dummy_root.after(1000, self.open_board) 
-            
-        self.dummy_root.mainloop()
+        self.root = ctk.CTk(); self.root.withdraw()
+        self.tray = None; self._setup_tray()
+        threading.Thread(target=self._poll_loop, daemon=True).start()
+        if not self.is_config_valid(): self.root.after(400, self.open_wizard)
+        else: self.trigger_refresh(); self.root.after(600, self.open_board)
+        self.root.mainloop()
 
     def is_config_valid(self):
-        if not isinstance(self.config, dict): return False
-        if 'route' not in self.config: return False
-        if 'dest' not in self.config['route']: return False
-        return True
+        return (isinstance(self.config,dict) and 'route' in self.config
+                and 'dest' in self.config['route'])
 
-    def open_wizard(self):
-        ModernWizard(self.dummy_root, self)
-        
+    def open_wizard(self): SetupWizard(self.root, self)
     def open_board(self):
-        if not self.is_config_valid(): return
-        DepartureBoard(self.dummy_root, self)
+        if self.is_config_valid(): DepartureBoard(self.root, self)
 
     def save_config(self):
-        with open(self.conf_path, 'w') as f: json.dump(self.config, f)
+        with open(self.conf_path,'w') as f: json.dump(self.config,f)
 
-    def setup_tray(self):
+    # ── Startup helpers ───────────────────────────────────────────────────────
+    _REG_KEY  = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    _REG_NAME = "BussNaar"
+
+    def _startup_cmd(self):
+        if getattr(sys, 'frozen', False):
+            return f'"{sys.executable}"'
+        return f'"{sys.executable}" "{Path(__file__).resolve()}"'
+
+    def is_startup_enabled(self):
+        if sys.platform != "win32": return False
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._REG_KEY, 0, winreg.KEY_READ)
+            winreg.QueryValueEx(key, self._REG_NAME)
+            winreg.CloseKey(key)
+            return True
+        except: return False
+
+    def _toggle_startup(self, icon, item):
+        if sys.platform != "win32": return
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._REG_KEY, 0, winreg.KEY_SET_VALUE)
+        if self.is_startup_enabled():
+            try: winreg.DeleteValue(key, self._REG_NAME)
+            except: pass
+        else:
+            winreg.SetValueEx(key, self._REG_NAME, 0, winreg.REG_SZ, self._startup_cmd())
+        winreg.CloseKey(key)
+
+    def _setup_tray(self):
         menu = Menu(
-            MenuItem("Vis Avganger", lambda icon, item: self.dummy_root.after(0, self.open_board), default=True),
-            MenuItem("Endre rute / Innstillinger", lambda icon, item: self.dummy_root.after(0, self.open_wizard)), 
-            MenuItem("Avslutt", self.quit)
-        )
-        self.tray = Icon("BussNaar?", self.draw_icon("..."), menu=menu)
+            MenuItem("Vis avganger",       lambda i,it: self.root.after(0,self.open_board), default=True),
+            MenuItem("Endre rute",         lambda i,it: self.root.after(0,self.open_wizard)),
+            MenuItem("Start ved oppstart", self._toggle_startup,
+                     checked=lambda item: self.is_startup_enabled()),
+            MenuItem("Avslutt",            self.quit))
+        self.tray = Icon("BussNaar", self._draw_icon("…"), menu=menu)
         threading.Thread(target=self.tray.run, daemon=True).start()
 
-    def draw_icon(self, text):
-        img = Image.new('RGB', (64, 64), color=AKT_GREEN)
-        d = ImageDraw.Draw(img)
-        try: font = ImageFont.truetype("segoeuib.ttf", 34)
+    def _draw_icon(self, text):
+        SIZE, R = 64, 14
+        img = Image.new('RGBA', (SIZE, SIZE), (0,0,0,0))
+        d   = ImageDraw.Draw(img)
+        # Rounded rectangle background
+        d.rounded_rectangle([0,0,SIZE-1,SIZE-1], radius=R, fill="#00c47a")
+        # Load font
+        try:    font = ImageFont.truetype("segoeuib.ttf", 42)
         except: font = ImageFont.load_default()
-        bbox = d.textbbox((0, 0), text, font=font)
-        d.text(((64 - (bbox[2] - bbox[0])) / 2, (64 - (bbox[3] - bbox[1])) / 2 - 4), text, fill="white", font=font)
-        return img
+        # Center text precisely
+        bb = d.textbbox((0,0), text, font=font)
+        tw, th = bb[2]-bb[0], bb[3]-bb[1]
+        tx = (SIZE - tw) / 2 - bb[0]
+        ty = (SIZE - th) / 2 - bb[1]
+        d.text((tx, ty), text, fill="white", font=font)
+        # Flatten to RGB for pystray
+        bg = Image.new('RGB', (SIZE,SIZE), (240,240,240))
+        bg.paste(img, mask=img.split()[3])
+        return bg
 
     def trigger_refresh(self):
         self.current_deps = None
-        threading.Thread(target=self.force_refresh, daemon=True).start()
+        threading.Thread(target=self._fetch, daemon=True).start()
 
-    def loop(self):
-        while self.running:
-            time.sleep(30)
-            self.force_refresh()
+    def _poll_loop(self):
+        while self.running: time.sleep(30); self._fetch()
 
-    def force_refresh(self, *args):
+    def _fetch(self, *_):
         if not self.is_config_valid(): return
         r = self.config['route']
-        
-        self.current_deps = EnturAPI.get_next_bus(r['stop_id'], r['line'], r['dest'])
-        
+        self.current_deps = EnturAPI.get_next_bus(r['stop_id'],r['line'],r['dest'])
         if self.current_deps:
-            next_bus = self.current_deps[0]
-            self.tray.icon = self.draw_icon(str(next_bus['mins']))
-            self.tray.title = f"{r['name']}\nLinje {next_bus['line']} til {next_bus['dest']} går om {next_bus['mins']} min\nVenstreklikk for å se flere."
+            nb = self.current_deps[0]
+            self.tray.icon  = self._draw_icon(str(nb['mins']))
+            self.tray.title = f"{r['name']} — {nb['line']} → {nb['dest']} om {nb['mins']} min"
         else:
-            self.tray.icon = self.draw_icon("-")
-            self.tray.title = "Ingen avganger funnet for valgt rute akkurat nå."
+            self.tray.icon  = self._draw_icon("-")
+            self.tray.title = "Ingen avganger funnet."
 
-    def quit(self, icon=None, item=None):
+    def quit(self, *_):
         self.running = False
         if self.tray: self.tray.stop()
-        self.dummy_root.quit()
+        self.root.quit()
+
 
 if __name__ == "__main__":
     AppController()
