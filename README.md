@@ -1,5 +1,6 @@
 # 🚌 BussNaar?
 > BussNår? - Når er bussen?
+> Min 2 ~~million~~ dollar idea! 
 
 BussNaar? er et lite program som kjører stille i bakgrunnen på PC-en din og holder styr på når neste buss går fra stoppet ditt. Du ser det direkte nede ved klokka, akkurat der du allerede ser på hele tiden.
 
