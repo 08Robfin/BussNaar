@@ -20,17 +20,6 @@ Perfect for students or commuters who just want to check the bus without opening
 * **Requests** - For talking to the Entur GraphQL and Geocoder APIs.
 * **Pillow** - For generating the dynamic tray icon image with real-time minutes.
 
-## 🚀 How to Run
-
-1. Make sure you have [Python](https://www.python.org/downloads/) installed.
-2. Clone this repository:
-   ```bash
-   git clone [https://github.com/YOUR_USERNAME/BussNaar.git](https://github.com/YOUR_USERNAME/BussNaar.git)
-   ```
-3. Go to the folder and run the script.
-   
-*(Note: The app will automatically install required packages like `customtkinter` and `pystray` on its first run if you don't have them).*
-
 ## ⚙️ Configuration
 The app saves your chosen route locally in `%userprofile%\BussNaar\config.json`. 
 
