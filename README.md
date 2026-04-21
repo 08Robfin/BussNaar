@@ -3,15 +3,11 @@
 
 BussNaar? er et lite program som kjører stille i bakgrunnen på PC-en din og holder styr på når neste buss går fra stoppet ditt. Du ser det direkte nede ved klokka, akkurat der du allerede ser på hele tiden.
 
----
-
 ## Hva er dette egentlig?
 
 Du vet den følelsen av å måtte åpne nettleseren, vente på at siden laster, skrive inn stoppet, finne riktig linje... og så er du allerede fem minutter forsinket?
 
 BussNår? løser det. Installer én gang, velg busslinja di, og så er du ferdig. Fra da av vises det alltid hvor mange minutter det er til neste buss, nede i systemstatusfeltet, ved siden av batteriikonet.
-
----
 
 ## Slik fungerer det
 
@@ -27,13 +23,9 @@ Programmet kjører i bakgrunnen og viser automatisk minutter til neste avgang. K
 
 > 💡 **Tips:** Vil du at ikonet alltid skal synes? Klikk på pil opp-symbolet (^) nede ved klokka, finn BussNaar?-ikonet (Grønn firkant med Tall), og dra det ned på linja ved siden av batteriikonet. Da ser du alltid neste avgang uten å klikke noe som helst.
 
----
-
 ## Perfekt for skoleelever
 
 Har du skolePC og vil alltid se når bussen hjem går? Dette er laget akkurat for det. Appen er testet på skolenettverk og fungerer selv der.
-
----
 
 ## Last ned og kom i gang
 
@@ -43,8 +35,6 @@ Har du skolePC og vil alltid se når bussen hjem går? Dette er laget akkurat fo
 4. Ferdig ✅
 
 Innstillingene dine lagres automatisk på PC-en din, så alt huskes til neste gang.
-
----
 
 ## Vil du endre busslinje senere?
 
